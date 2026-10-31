@@ -1,0 +1,56 @@
+# Build artifacts (Phase 2+)
+build/
+sources/
+*.img
+*.iso
+*.qcow2
+*.tar.gz
+*.tar.xz
+*.tar.bz2
+*.tar
+*.sig
+*.asc
+
+# Logs
+*.log
+
+# Editor / OS files
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Local secrets (must never be committed)
+*.key
+*.pem
+secrets/
+
+# Bench raw outputs that are huge — keep summaries only
+bench/results/**/*.raw
+bench/results/io-workdir/
+
+# Python caches and local test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environment files (keep examples)
+.env
+.env.*
+!.env.example
+
+# VM and release artifacts
+*.vdi
+*.vmdk
+*.vhdx
+*.box
+*.deb
+*.rpm
+*.pkg.tar*
+*.zst

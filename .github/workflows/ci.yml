@@ -1,0 +1,85 @@
+# .github/workflows/ci.yml — Phase 0 CI configuration.
+#
+# Per Project Initiation v2 §14: "конфигурация CI (файл без запуска пушей)".
+# Per §10: no automatic push; this file is checked in but does not push.
+#
+# This pipeline runs on every push to a local branch and on every pull
+# request. It does NOT trigger any LFS build, kernel build, ISO build, or
+# deployment. Phase 0 scope: lint + sanity only.
+
+name: phase0-lint
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+      - master
+
+# Do NOT auto-push anything. No release artifacts. No deployments.
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck (skip if tool absent)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+      - name: Run shellcheck
+        run: make shellcheck
+
+  adr-lint:
+    name: ADR sanity check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run adr-lint
+        run: python3 scripts/adr-lint.py docs/adr
+
+  sources-verify:
+    name: sources.lock URL reachability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify source URLs
+        run: python3 scripts/sources-verify.py sources.lock
+
+  host-version-check:
+    name: host version check (informational)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run host version check
+        # We allow this to fail — the CI runner is not our build host.
+        run: bash scripts/host-version-check.sh || true
+
+  # NOTE: This file declares jobs but does NOT perform any LFS build, kernel
+  # build, or release. It does NOT push tags, releases, or artifacts. Per
+  # Project Initiation v2 §10, no commit / push / external modification is
+  # performed by automation.

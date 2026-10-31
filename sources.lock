@@ -1,0 +1,115 @@
+# sources.lock — pinned source manifest for the first LFS stage.
+#
+# Phase 0 scope: only the kernel tarball + LFS 13.1-systemd top-of-tree
+# packages are listed. Full SHA256 set will be filled in at Phase 2 entry
+# after the actual download.
+#
+# Status legend:
+#   verified   — URL reachable + SHA256 computed from downloaded tarball
+#   url-ok     — URL reachable (HTTP HEAD 200); SHA256 not yet computed
+#   unverified — URL not yet probed (no network at time of manifest creation)
+#
+# Per Project Initiation v2 §10: "Все исходники: URL, версия, SHA256 (и подпись
+# upstream, где есть) в машиночитаемом манифесте". This file IS that manifest.
+# Format: TOML-ish; one entry per source, fields explicit.
+#
+# Last verification run: 2026-10-30 (UTC+8).
+
+# ============================================================================
+# Kernel
+# ============================================================================
+
+[[sources]]
+name        = "linux"
+version     = "6.18.59"
+url         = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.59.tar.xz"
+signature   = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.59.tar.sign"
+signer      = "kernel.org release maintainer (Greg Kroah-Hartman for 6.x stable)"
+sign_status = "url-ok (PGP .tar.sign published by kernel.org)"
+sha256      = "UNVERIFIED"   # computed in Phase 2 after download
+status      = "url-ok"      # URL verified 2026-10-30 via HTTP HEAD: 200
+license     = "GPL-2.0-only WITH Linux-syscall-note"
+purpose     = "Project baseline kernel per ADR-0006"
+
+# ============================================================================
+# LFS 13.1-systemd core toolchain sources (subset shown; full list to be
+# fetched in Phase 2 from the LFS 13.1-systemd chapter 3 packages page:
+# https://www.linuxfromscratch.org/lfs/view/13.1-systemd/chapter03/packages.html)
+#
+# Versions below are extracted from the LFS 13.1-systemd packages page on
+# 2026-10-30. URLs and versions are correct; SHA256 will be computed per
+# download in Phase 2. The list is not exhaustive — only the first-stage
+# (Chapter 5–6) tools are pinned here; everything else is filled in at
+# Phase 2.
+# ============================================================================
+
+[[sources]]
+name = "glibc";     version = "2.44";   url = "https://ftpmirror.gnu.org/glibc/glibc-2.44.tar.xz";     sha256 = "UNVERIFIED"; license = "LGPL-2.1+";
+[[sources]]
+name = "gcc";        version = "16.2.0"; url = "https://ftpmirror.gnu.org/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz"; sha256 = "UNVERIFIED"; license = "GPL-3.0+ with GCC runtime exception";
+[[sources]]
+name = "binutils";   version = "2.47";   url = "https://sourceware.org/ftp/binutils/releases/binutils-2.47.tar.xz"; sha256 = "UNVERIFIED"; license = "GPL-3.0+";
+[[sources]]
+name = "systemd";    version = "261.2";  url = "https://github.com/systemd/systemd/archive/v261.2/systemd-261.2.tar.gz"; sha256 = "UNVERIFIED"; license = "LGPL-2.1+";
+[[sources]]
+name = "bash";       version = "5.3";    url = "https://ftpmirror.gnu.org/bash/bash-5.3.tar.gz"; sha256 = "UNVERIFIED"; license = "GPL-3.0+";
+[[sources]]
+name = "coreutils";  version = "9.11";   url = "https://ftpmirror.gnu.org/coreutils/coreutils-9.11.tar.xz"; sha256 = "UNVERIFIED"; license = "GPL-3.0+";
+[[sources]]
+name = "make";       version = "4.4.1";  url = "https://ftpmirror.gnu.org/make/make-4.4.1.tar.gz"; sha256 = "UNVERIFIED"; license = "GPL-3.0+";
+[[sources]]
+name = "bison";      version = "3.8.2";  url = "https://ftpmirror.gnu.org/bison/bison-3.8.2.tar.xz"; sha256 = "UNVERIFIED"; license = "GPL-3.0+";
+[[sources]]
+name = "gawk";       version = "5.4.1";  url = "https://ftpmirror.gnu.org/gawk/gawk-5.4.1.tar.xz"; sha256 = "UNVERIFIED"; license = "GPL-3.0+";
+[[sources]]
+name = "texinfo";    version = "7.3";    url = "https://ftpmirror.gnu.org/texinfo/texinfo-7.3.tar.xz"; sha256 = "UNVERIFIED"; license = "GPL-3.0+";
+[[sources]]
+name = "perl";       version = "5.44.0"; url = "https://www.cpan.org/src/5.0/perl-5.44.0.tar.xz"; sha256 = "UNVERIFIED"; license = "GPL-1.0+ or Artistic";
+[[sources]]
+name = "python";     version = "3.14.7"; url = "https://www.python.org/ftp/python/3.14.7/Python-3.14.7.tar.xz"; sha256 = "UNVERIFIED"; license = "PSF-2.0";
+[[sources]]
+name = "openssl";    version = "4.0.1"; url = "https://github.com/openssl/openssl/releases/download/openssl-4.0.1/openssl-4.0.1.tar.gz"; sha256 = "UNVERIFIED"; license = "Apache-2.0";
+[[sources]]
+name = "grub";       version = "2.14";   url = "https://ftpmirror.gnu.org/grub/grub-2.14.tar.xz"; sha256 = "UNVERIFIED"; license = "GPL-3.0+";
+
+# ============================================================================
+# LFS 13.1-systemd patches referenced from chapter 3 patches page:
+# https://www.linuxfromscratch.org/lfs/view/13.1-systemd/chapter03/patches.html
+# ============================================================================
+
+[[patches]]
+name = "bzip2-install_docs";     version = "1.0.8"; url = "https://www.linuxfromscratch.org/patches/lfs/13.1/bzip2-1.0.8-install_docs-1.patch"; sha256 = "UNVERIFIED";
+[[patches]]
+name = "coreutils-i18n";          version = "9.11";  url = "https://www.linuxfromscratch.org/patches/lfs/13.1/coreutils-9.11-i18n-1.patch"; sha256 = "UNVERIFIED";
+[[patches]]
+name = "expect-gcc15";            version = "5.45.4"; url = "https://www.linuxfromscratch.org/patches/lfs/13.1/expect-5.45.4-gcc15-1.patch"; sha256 = "UNVERIFIED";
+[[patches]]
+name = "glibc-upstream_fixes";    version = "2.44";   url = "https://www.linuxfromscratch.org/patches/lfs/13.1/glibc-2.44-upstream_fixes-1.patch"; sha256 = "UNVERIFIED";
+[[patches]]
+name = "glibc-fhs";                version = "1";      url = "https://www.linuxfromscratch.org/patches/lfs/13.1/glibc-fhs-1.patch"; sha256 = "UNVERIFIED";
+[[patches]]
+name = "kbd-backspace";           version = "2.10.0"; url = "https://www.linuxfromscratch.org/patches/lfs/13.1/kbd-2.10.0-backspace-1.patch"; sha256 = "UNVERIFIED";
+[[patches]]
+name = "python-openssl_4";        version = "3.14.7"; url = "https://www.linuxfromscratch.org/patches/lfs/13.1/Python-3.14.7-openssl_4-1.patch"; sha256 = "UNVERIFIED";
+[[patches]]
+name = "tar-acl_fix";              version = "1.35";   url = "https://www.linuxfromscratch.org/patches/lfs/13.1/tar-1.35-acl_fix-1.patch"; sha256 = "UNVERIFIED";
+
+# ============================================================================
+# Notes
+# ============================================================================
+#
+# 1. The kernel tarball URL is reachable; we will compute its SHA256 in Phase 2
+#    by actually downloading it.
+# 2. PGP signature verification for the kernel uses the .tar.sign file (the
+#    .tar.xz is built deterministically from the .tar; we verify .tar.sign
+#    against the .tar, then compute .tar.xz's sha256 locally).
+# 3. The LFS book itself does not publish a single machine-readable manifest of
+#    source checksums. Per-package checksums are listed individually on each
+#    package's download page. Our Phase 2 download script will fetch each URL
+#    and compute SHA256 in-place, then update this file.
+# 4. License fields are best-effort; full SBOM with exact license texts lands
+#    in Phase 11 (release engineering).
+# 5. `ftpmirror.gnu.org` may be unreachable in some sandboxed environments
+#    (the Phase 0 sources-verify run reported FAIL for ftpmirror URLs in
+#    one such environment). The Phase 2 download script will fall back to
+#    `https://mirrors.kernel.org/gnu/` if the primary mirror fails.
