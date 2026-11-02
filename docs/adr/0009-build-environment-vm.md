@@ -1,10 +1,10 @@
 # ADR-0009 — Build environment: isolated Linux VM
 
-- **Status:** Accepted (owner decision 2026-10-31 — Phase 2 Build Environment: «Выбираю вариант A: постоянная изолированная Build VM»)
+- **Status:** Accepted (owner decision 2026-10-31 — Phase 2 Build Environment: «Выбираю вариант A: постоянная изолированная Build VM»). **Не изменён аудитом 2026-11-02** (правки только в wording вокруг S0/S1, не в сам Decision).
 - **Date:** 2026-10-31 (рекреирован после recycle песочницы; оригинальная дата создания — 2026-10-31 в Phase 1)
 - **Phase origin:** Phase 1
 - **Decision owner:** Project owner (§8 — build environment; sign-off Phase 0 Q3/Q4)
-- **Confidence:** Verified — VM specs утверждены владельцем; фактическая проверка после развёртывания VM (S0 preflight)
+- **Confidence:** Verified — VM specs утверждены владельцем; фактическая проверка после развёртывания VM (S0 preflight — host-level; S1 — disk + workspace)
 
 ## Context
 
@@ -36,9 +36,9 @@ Phase 1 (2026-10-31) создал первоначальный ADR-0009 (Accepte
 | Admin account | `admin` (для apt-install, libvirt/qemu setup, snapshots) |
 | Build account | `lfs` — непривилегированный, **БЕЗ sudo** |
 | Nested virtualization | включить, если доступна (для QEMU/KVM внутри VM) |
-| Snapshots | обязательно перед S0, S1, S2 и каждым критическим этапом |
+| Snapshots | обязательно перед S0 (clean-base), после S0 (after-S0-preflight), после S1 (before-S2), и каждым критическим этапом S2–S8 |
 
-Финальная инструкция развёртывания — `docs/BUILD_ENV_SETUP.md`. Фактические ресурсы проверяются после создания VM (S0 preflight в самой VM).
+Финальная инструкция развёртывания — `docs/BUILD_ENV_SETUP.md`. Фактические ресурсы проверяются в два шага: S0 (host preflight, без disk work) и S1 (disk + lfs workspace) в самой VM.
 
 ## Rationale
 
@@ -68,6 +68,6 @@ Phase 1 (2026-10-31) создал первоначальный ADR-0009 (Accepte
 
 ## Verification plan
 
-- **Verified (S0 preflight):** после развёртывания VM владелец присылает заполненный чек-лист `docs/BUILD_ENV_SETUP.md` §6.1; я повторяю `scripts/host-version-check.sh` на VM (через транзитивный доступ — владелец копирует вывод, или через SSH-доступ — рекомендуется).
-- **Verified (S1):** Disk 2 размечен, /mnt/lfs смонтирован, lfs user настроен, lfs-safety.sh self-test OK.
+- **Verified (S0 preflight):** после развёртывания VM владелец присылает вывод S0 host preflight (`scripts/host-version-check.sh` + `python3 scripts/sources-verify.py sources.lock` с ПОЛНЫМ выводом включая Summary `N OK, N FAIL, N SKIPPED`; exit code НЕ подавляемым через `|| echo`; интерпретация: exit 0 = нет FAIL среди проверенных URL, но SKIPPED может быть > 0 если URL содержит "UNVERIFIED" — в текущем sources.lock все URL реальные, ожидаемо 22 OK / 0 FAIL / 0 SKIPPED + `lsblk` + `qemu-system-x86_64 --version` + `ping -c1 kernel.org` + `/dev/kvm` presence); доступ — транзитивный (владелец копирует вывод; SSH/пароли/ключи НЕ передаются — правило 2026-11-02). S0 НЕ требует /mnt/lfs, lfs user, lfs-safety.sh. **ИИ проводит аудит выводов и даёт явное «S0 PASS» или «S0 FAIL».** Snapshot `after-S0-preflight` создаётся владельцем **только после явного «S0 PASS» от ИИ** (НЕ автоматически после прохождения чек-листа).
+- **Verified (S1):** S0 PASS получен; Disk 2 размечен (owner approval gate), /mnt/lfs смонтирован по UUID, lfs user создан (idempotent через `groupadd -f lfs` + `id lfs || adduser lfs`), lfs НЕ в sudo/libvirt, lfs в kvm IFF /dev/kvm, lfs-safety.sh self-test OK.
 - **Verified (build):** первый пакет LFS (Binutils pass 1) компилируется в S3 от lfs без ошибок; лог сохранён в /mnt/lfs/build-logs/.

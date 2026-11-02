@@ -1,9 +1,10 @@
 # BUILD_ENV_SETUP — Final instruction: deployment of permanent isolated Build VM
 
-Статус: **Implemented** (финальная инструкция v2; владелец выполняет развёртывание VM).
+Статус: **Implemented** (финальная инструкция v4; владелец выполняет развёртывание VM).
 Целевая конфигурация утверждена владельцем 2026-10-31 (см. ADR-0009, Accepted; OWNER DECISION — Phase 2 Build Environment).
 Исправления v2 (2026-10-31): 7 пунктов владельца — lsblk-first disk identification, UUID в /etc/fstab, admin не в группе lfs без необходимости, lfs не в libvirt без обоснования, не требовать отключения Hyper-V/VBS, разделение build/test tools, TCG как первоклассный fallback.
 Исправления v3 (2026-10-31, дополнительное решение владельца): Nested KVM **НЕ является обязательным условием**; использовать VMware или VirtualBox для Debian VM; QEMU TCG — полноценный fallback (не «деgraded», а эквивалентная функциональность с другой скоростью).
+Исправления v4 (2026-11-02, аудит консистентности Phase 2): (a) S0/S1 разделены — S0 = host preflight без disk work, без /mnt/lfs, без lfs user; S1 = disk + workspace + lfs user + lfs-safety; (b) §6 snapshot table очищена от дубликатов (`before-S1` убран как дубликат `after-S0-preflight`); (c) §7.2 SSH/security — абсолютный запрет на передачу ИИ паролей/ключей, для S0 рекомендуется транзитивный доступ; (d) UEFI/OVMF явно отложен до Phase 3; (e) lfs user creation — идемпотентные проверки через `getent`/`id`, lfs в kvm только при наличии `/dev/kvm`.
 
 ## 0. Целевая конфигурация VM (owner decision 2026-10-31)
 
@@ -211,21 +212,48 @@ sudo apt install -y \
 | C | test tools | S6–S8 (обязательно для тестов) | 3 |
 | D | libvirt (опционально) | только если libvirt-стек | 4 (не устанавливать по умолчанию) |
 
-### 2.5. Создание пользователя `lfs` (без sudo!)
+### 2.5. Создание пользователя `lfs` (идемпотентное, без sudo!)
+
+**Ключевая идея (fix #3 аудита 2026-11-02):** Debian `adduser lfs` (без `--ingroup`) **сам создаёт одноимённую группу `lfs`** и использует её как primary. Поэтому безопасный идемпотентный порядок — сначала `groupadd -f lfs` (создаёт группу, если её ещё нет; exit 0 в обоих случаях), затем `adduser lfs` (использует существующую группу `lfs` как primary, если группа уже была создана шагом выше — это стандартное поведение Debian `adduser`).
 
 ```bash
-sudo adduser lfs
-# Задать пароль для lfs, записать в менеджер паролей.
-# НЕ добавлять lfs в sudo/wheel групп.
+# 1. Группа lfs (idempotent — флаг `-f` выходит 0 и в случае существования группы,
+#    и в случае создания; никаких гонок между проверкой и созданием)
+sudo groupadd -f lfs
+
+# 2. Пользователь lfs (idempotent — пропускает создание, если уже существует).
+#    Debian `adduser lfs` создаёт пользователя с primary group `lfs` (использует
+#    существующую группу, созданную шагом выше; если пользователь уже существует —
+#    создание пропускается, ошибка НЕ возникает)
+if ! id lfs >/dev/null 2>&1; then
+  sudo adduser lfs   # интерактивно: владелец задаёт пароль и GECOS
+fi
+
+# 3. Убедиться, что lfs — член группы lfs (idempotent; harmless, если уже primary member)
+sudo usermod -aG lfs lfs
+
+# 4. Добавить lfs в kvm ТОЛЬКО если /dev/kvm существует (см. §2.7)
+if [ -e /dev/kvm ]; then
+  sudo usermod -aG kvm lfs
+fi
+
+# НЕ ВЫПОЛНЯТЬ (явный запрет):
+#   sudo usermod -aG sudo lfs     (lfs — непривилегированный, без sudo)
+#   sudo usermod -aG wheel lfs    (lfs — непривилегированный, без sudo)
+#   sudo usermod -aG libvirt lfs  (libvirt не используется)
 ```
 
-### 2.6. Группа `lfs` (исправление #3)
+**Примечание:** `adduser` на Debian интерактивно запрашивает пароль и GECOS. Пароль должен быть записан владельцем в менеджер паролей; **ИИ не запрашивает пароль и не принимает его от владельца** (правило 2026-11-02). Если `adduser` ругается на существование группы `lfs` (это не стандартное поведение Debian, но возможно на старых версиях) — убрать шаг 1 (`groupadd -f lfs`) и положиться на автосоздание группы самим `adduser`.
 
-**Создать группу `lfs` и добавить в неё ТОЛЬКО пользователя `lfs`.** Не добавлять `admin` в группу `lfs` без необходимости.
+### 2.6. Проверка группы `lfs` (после §2.5)
+
+**Группа `lfs` уже создана в §2.5** (через `groupadd -f lfs` или автосоздана `adduser lfs`). Дополнительное создание группы здесь НЕ требуется. Этот раздел — только verify и документация про `admin`.
 
 ```bash
-sudo groupadd -f lfs
-sudo usermod -aG lfs lfs
+# Проверка состояния группы lfs:
+getent group lfs   # ожидается: lfs:x:<gid>:lfs
+# Проверка членства lfs в группе lfs:
+groups lfs         # ожидается: lfs lfs  (или lfs lfs kvm если /dev/kvm)
 ```
 
 Если `admin`-у понадобится читать файлы в `/mnt/lfs` (например, для диагностики) — использовать `sudo -u lfs` или `sudo cat` для конкретных файлов, а не постоянное членство в группе. Если всё же требуется постоянный доступ — добавить `admin` в `lfs` осознанно:
@@ -235,16 +263,27 @@ sudo usermod -aG lfs lfs
 # sudo usermod -aG lfs admin
 ```
 
-### 2.7. KVM группа (исправление #4) — НЕ добавлять lfs в libvirt
+### 2.7. KVM группа (исправление #4) — НЕ добавлять lfs в libvirt; kvm только при наличии /dev/kvm
+
+Шаг уже выполнен в §2.5 (шаг 4) — `if [ -e /dev/kvm ]; then sudo usermod -aG kvm lfs; fi`. Этот раздел — дополнительное пояснение и проверка.
 
 Если `/dev/kvm` существует (см. §5.2), `lfs`-у нужен доступ к нему для запуска QEMU с `-enable-kvm`. Это делается через группу `kvm`, **НЕ через libvirt**.
 
 ```bash
-# Если /dev/kvm существует:
-ls -la /dev/kvm  # проверяем владельца и группу
-# Ожидается: crw-rw---- 1 root kvm ...
-sudo usermod -aG kvm lfs    # lfs получает доступ к /dev/kvm
-# НЕ ВЫПОЛНЯТЬ: sudo usermod -aG libvirt lfs  (libvirt не используется; lfs не должен получать админ-привилегий)
+# Проверка (после §2.5 шаг 4):
+if [ -e /dev/kvm ]; then
+  ls -la /dev/kvm  # проверяем владельца и группу
+  # Ожидается: crw-rw---- 1 root kvm ...
+  groups lfs      # ожидается: lfs lfs kvm (требуется re-login lfs, если lfs в сессии)
+  # Если lfs не в kvm (re-login ещё не сделан) — повторить `sudo usermod -aG kvm lfs` (идемпотентно)
+else
+  echo "INFO: /dev/kvm не существует. lfs не добавляется в kvm. QEMU будет на TCG (см. §5.3)."
+fi
+
+# НЕ ВЫПОЛНЯТЬ (явный запрет):
+#   sudo usermod -aG libvirt lfs  (libvirt не используется; lfs не должен получать админ-привилегий)
+#   sudo usermod -aG sudo lfs     (lfs — непривилегированный, без sudo)
+#   sudo usermod -aG wheel lfs   (lfs — непривилегированный, без sudo)
 ```
 
 Если `/dev/kvm` не существует — пропустить этот шаг; QEMU будет на TCG (см. §5.3).
@@ -526,100 +565,123 @@ host_cpu_info: <lscpu output>
 note: Если backend=tcg, время S7 boot не эквивалентно KVM. Числа не сравнивать напрямую.
 ```
 
-## 6. Snapshots — стратегия
+## 6. Snapshots — стратегия (v4, очищена от дубликатов 2026-11-02)
 
-| Snapshot name | Когда | Что включает |
-|---|---|---|
-| `clean-base` | после установки Debian, до apt-install | чистый Debian 13 |
-| `after-S0-preflight` | после моего S0 preflight (одобренного) | все пакеты установлены, lfs user готов, /mnt/lfs смонтирован |
-| `before-S1` | перед началом S1 | состояние после S0 |
-| `before-S2` | перед S2 (скачивание sources) | lfs workspace пуст |
-| `before-S3` | перед S3 (temp toolchain) | sources скачаны, SHA256 verified |
-| `before-S4` | перед S4 (базовая система LFS) | temp toolchain готов |
-| `before-S5` | перед S5 (kernel build) | rootfs базовая система готова |
-| `before-S6` | перед S6 (initramfs + GRUB) | ядро собрано |
-| `before-S7` | перед S7 (QEMU boot) | диск подготовлен |
-| `after-S7-success` | после успешного S7 (boot to login) | готовый bootable disk.qcow2 |
-| `after-S8-success` | после S8 (verified QEMU) | финальное состояние Phase 2 |
+Каноническая таблица snapshot'ов. **Каждый snapshot соответствует одному уникальному состоянию VM** — дубликаты удалены (раньше `before-S1` дублировал `after-S0-preflight`; `before-S2` дублировал state S1-done).
 
-Если стадия провалилась — восстановить snapshot предыдущей стадии, диагностировать, повторить.
+**S0/S1 разделены (v4):** S0 = host preflight без disk work, без /mnt/lfs, без lfs user; S1 = disk + workspace + lfs user + lfs-safety. Соответственно:
+- `after-S0-preflight` — host готов, Disk 2 ещё не размечен. **Создаётся ТОЛЬКО после явного подтверждения «S0 PASS» от ИИ** (ИИ проводит аудит выводов S0, присланных владельцем транзитивно); до подтверждения snapshot НЕ создаётся — в случае FAIL состояние VM нужно менять, и snapshot только помешает.
+- `before-S2` — workspace готов (S1 done), можно скачивать sources.
+
+| Snapshot name | Когда делается | Что включает состояние VM | Какой стадии соответствует |
+|---|---|---|---|
+| `clean-base` | после установки Debian 13, до apt-install | чистый Debian 13 (recover baseline) | (pre-S0) |
+| `after-S0-preflight` | **после явного подтверждения «S0 PASS» от ИИ** (ИИ получил выводы S0 от владельца транзитивно, провёл аудит, дал «S0 PASS»); НЕ создаётся автоматически после прохождения S0 чек-листа | apt-пакеты установлены (A+B+C), host-version-check OK, qemu доступен, /dev/kvm noted, network OK, `python3 scripts/sources-verify.py sources.lock` → exit 0 AND FAIL=0 AND каждый SKIPPED объяснён (текущий sources.lock: ожидаемо 22 OK / 0 FAIL / 0 SKIPPED — все URL реальные, UNVERIFIED только в полях sha256), Disk 2 виден в lsblk (неразмеченный, неформатированный) | S0 PASS |
+| ~~`before-S1`~~ | ~~перед началом S1~~ | ~~дубликат `after-S0-preflight` (между S0 и S1 нет работы)~~ | **УБРАН как дубликат (v4)** |
+| `before-S2` | перед S2 (скачивание sources); = S1 done | Disk 2 размечен, /mnt/lfs смонтирован по UUID, lfs user + lfs env + lfs-safety OK, /mnt/lfs/{sources,...} созданы, free ≥ 15 GB | S1 done |
+| `before-S3` | перед S3 (temp toolchain) | sources скачаны, SHA256 verified; `sources.lock` updated | S2 done |
+| `before-S4` | перед S4 (базовая система LFS) | temp toolchain готов | S3 done |
+| `before-S5` | перед S5 (kernel build) | rootfs базовая система готова | S4 done |
+| `before-S6` | перед S6 (initramfs + GRUB) | ядро собрано | S5 done |
+| `before-S7` | перед S7 (QEMU boot) | диск подготовлен (initramfs + GRUB + test rootfs) | S6 done |
+| `after-S7-success` | после успешного S7 (BIOS boot to login) | готовый bootable disk.qcow2 (BIOS/SeaBIOS path; UEFI — Phase 3) | S7 done |
+| `after-S8-success` | после S8 (verified QEMU) | финальное состояние Phase 2 | Phase 2 done |
+
+**Правила:**
+- Если стадия провалилась — восстановить snapshot предыдущей стадии, диагностировать, повторить.
+- Snapshot делается **только после успешного прохождения** readiness gate соответствующей стадии.
+- **Для `after-S0-preflight` readiness gate = явное подтверждение «S0 PASS» от ИИ** (не автоматический проход чек-листа; ИИ может попросить доработать или повторить проверку).
+- `clean-base` — единственный «emergency recovery» snapshot; всё остальное — checkpoints прогресса.
+- UEFI/OVMF-загрузка не входит в Phase 2; соответствующие snapshots (`after-S7-uefi-success` и т.п.) появятся в Phase 3.
 
 ## 7. Readiness checklist — отчёт владельца (что проверить и сообщить мне)
 
 После завершения §2–§5 заполнить и прислать мне:
 
-### 7.1. Чек-лист готовности VM
+### 7.1. Чек-лист готовности VM (отчёт владельца после S0 + S1)
+
+Чек-лист ниже покрывает **S0 (host preflight, owner-driven) + S1 (disk + workspace + lfs user setup, owner-driven с моим аудитом выводов)**. Пункты помечены `[S0]` или `[S1]` для ясности, какой стадии соответствует каждая проверка. Заполняется владельцем после прохождения всей последовательности; я провожу аудит выводов и даю разрешение на S2.
 
 ```
-[ ] VM создана в гипервизоре (укажите каком: VirtualBox / VMware / Hyper-V / libvirt)
-[ ] vCPU: ___ (target 8)
-[ ] RAM: ___ GB (target 12–16)
-[ ] Disk 1 (Debian host): ___ GB (target 40)
-[ ] Disk 2 (LFS workspace): ___ GB (target 60)
-[ ] Debian 13 trixie установлена (uname -a output: ___)
-[ ] admin user создан, sudo работает
-[ ] lfs user создан, БЕЗ sudo (groups lfs output: ___)
-[ ] lfs НЕ в libvirt группе (groups lfs output не содержит 'libvirt'): yes / no
-[ ] admin НЕ в lfs группе (если добавили — указать причину): yes / no / not added
-[ ] apt full-upgrade выполнен
-[ ] Build tools (категория A, 14 пакетов) установлены: yes / no
-[ ] System tools (категория B, 8 пакетов) установлены: yes / no
-[ ] Test tools (категория C, 3 пакета) установлены: yes / no
-[ ] Libvirt tools (категория D) — НЕ установлены (или указать причину): not installed / installed
-[ ] Disk 2 идентифицирован через lsblk (укажите device name и SIZE): ___
-[ ] Disk 2 размечен (fdisk -l /dev/sdX output: ___)
-[ ] /mnt/lfs смонтирован по UUID (grep lfs /etc/fstab output: ___)
-[ ] df -h /mnt/lfs output: ___
-[ ] /mnt/lfs/sources имеет sticky bit (ls -ld /mnt/lfs/sources: ___)
-[ ] /mnt/lfs owner = lfs:lfs (ls -ld /mnt/lfs: ___)
-[ ] lfs-safety.sh установлен и self-test OK (5/5)
-[ ] qemu-system-x86_64 --version: ___
-[ ] qemu-img --version: ___
-[ ] /dev/kvm exists: yes / no
-[ ] Если yes: groups lfs contains kvm: yes / no
-[ ] Если no: TCG-only (задокументировано; Phase 2 S7 будет медленнее)
-[ ] Network: ping -c1 kernel.org: yes / no
-[ ] Network: ping -c1 ftp.lfs-matrix.net: yes / no
-[ ] Snapshot «clean-base» сделан (до S0)
-[ ] Snapshot «after-S0-preflight» сделан (после моего S0 preflight)
+[S0] VM создана в гипервизоре (укажите каком: VirtualBox / VMware / Hyper-V / libvirt)
+[S0] vCPU: ___ (target 8)
+[S0] RAM: ___ GB (target 12–16)
+[S0] Disk 1 (Debian host): ___ GB (target 40)
+[S0] Disk 2 (LFS workspace): ___ GB (target 60) — НЕ размечен, НЕ отформатирован на момент S0
+[S0] Debian 13 trixie установлена (uname -a output: ___)
+[S0] admin user создан, sudo работает
+[S0] apt full-upgrade выполнен
+[S0] Build tools (категория A, 14 пакетов) установлены: yes / no
+[S0] System tools (категория B, 8 пакетов) установлены: yes / no
+[S0] Test tools (категория C, 3 пакета) установлены: yes / no
+[S0] Libvirt tools (категория D) — НЕ установлены (или указать причину): not installed / installed
+[S0] qemu-system-x86_64 --version: ___
+[S0] qemu-img --version: ___
+[S0] /dev/kvm exists: yes / no  (если no — TCG-only, задокументировано)
+[S0] Disk 2 идентифицирован через lsblk (device name + SIZE + MODEL + VENDOR): ___
+[S0] Network: ping -c1 kernel.org: yes / no
+[S0] Network: ping -c1 ftp.lfs-matrix.net: yes / no
+[S0] bash scripts/host-version-check.sh на VM (вывод приложите): ___ (ожидается все 20 LFS-tools OK)
+[S0] python3 scripts/sources-verify.py sources.lock (вывод приложите ПОЛНОСТЬЮ — включая последнюю строку `Summary: N OK, N FAIL, N SKIPPED (placeholder)`; exit code: ___; интерпретация: exit 0 = нет FAIL среди проверенных URL (но часть URL может быть SKIPPED, если URL содержит строку "UNVERIFIED" — в текущем sources.lock все URL реальные, ожидаемо 22 OK / 0 FAIL / 0 SKIPPED); exit 1 = есть FAIL; exit 2 = sources.lock не найден; НЕ подавляйте exit code через `|| echo`)
+[S0] Анализ SKIPPED: если SKIPPED > 0 — каждый SKIP объяснён как ожидаемый UNVERIFIED placeholder (не упущенная проверка): yes / no / n/a (SKIPPED=0)
+[S0] Snapshot «clean-base» сделан (после Debian install, до apt-install)
+[S0] Вывод всех S0 команд передан ИИ (транзитивно — копия вывода, БЕЗ паролей/ключей)
+[S0] **Дождаться явного «S0 PASS» от ИИ** перед созданием snapshot `after-S0-preflight` (НЕ создавать snapshot автоматически после прохождения чек-листа; если ИИ вернёт «S0 FAIL» — доработать и повторить)
+[S0] Snapshot «after-S0-preflight» сделан (только после подтверждения «S0 PASS» от ИИ)
+[S1] Owner approval gate: владелец подтвердил, что /dev/sdX = Disk 2 (yes)
+[S1] Disk 2 размечен (fdisk -l /dev/sdX output: ___)
+[S1] /mnt/lfs смонтирован по UUID (grep lfs /etc/fstab output: ___)
+[S1] df -h /mnt/lfs output: ___ (target free ≥ 15 GB)
+[S1] /mnt/lfs/sources имеет sticky bit (ls -ld /mnt/lfs/sources: ___)
+[S1] /mnt/lfs owner = lfs:lfs (ls -ld /mnt/lfs: ___)
+[S1] lfs user создан (id lfs output: ___)
+[S1] lfs НЕ в sudo/wheel/libvirt группе (groups lfs output не содержит 'sudo'/'wheel'/'libvirt'): yes / no
+[S1] Если /dev/kvm exists: groups lfs contains 'kvm': yes / no / n/a
+[S1] lfs-safety.sh установлен и self-test OK (5/5) (вывод: ___)
+[S1] Snapshot «before-S2» сделан (после S1 done, перед S2 sources download)
 ```
 
-### 7.2. Доступ к VM для меня
+### 7.2. Доступ к VM для меня (правила 2026-11-02)
 
-Я буду выполнять S0 preflight на VM. Для этого мне нужен один из вариантов доступа:
+**Абсолютный запрет (правило владельца 2026-11-02):** владелец НЕ передаёт ИИ пароли, приватные SSH-ключи, токены, секреты какого-либо рода. ИИ НЕ запрашивает эти данные и НЕ принимает их, если владелец по ошибке их отправит.
 
-**Вариант A (рекомендуется): SSH-доступ**
-- VM настроена с SSH server (port 22).
-- На хост-машине настроен port forwarding: host:2222 → vm:22.
-- Мне передаётся команда подключения: `ssh -p 2222 lfs@<host-ip-or-localhost>` или аналогичная.
-- Пароль lfs передаётся мне (или на время сессии создаётся отдельный SSH-ключ).
+**Для S0 и S1 — только транзитивный доступ (Вариант B, рекомендуется и единственно допустимый):**
 
-**Вариант B: я работаю через вас (транзитивно)**
-- Вы (владелец) выполняете команды, которые я даю, и копируете вывод обратно.
-- Медленно, но работает.
-- Минимум: вы передаёте вывод `bash scripts/host-version-check.sh` (запущенного на VM как `admin`), плюс вывод `lsblk`, `free -h`, `nproc`, `cat /etc/os-release`, `ls -la /dev/kvm`, `groups lfs`.
+- Я даю конкретный список команд для запуска на VM (от имени `admin` для системных команд, от имени `lfs` — для команд сборки).
+- Владелец выполняет команды на VM (через консоль гипервизора, либо через SSH, настроенный локально владельцем), копирует вывод и присылает мне.
+- Я анализирую вывод, принимаю решение о следующей команде.
+- Минимум для S0: владелец присылает вывод `bash scripts/host-version-check.sh` (запущенного на VM как `admin`), `python3 scripts/sources-verify.py sources.lock` (ПОЛНЫЙ вывод, включая последнюю строку `Summary: N OK, N FAIL, N SKIPPED`; exit code НЕ подавляемым через `|| echo`; интерпретация: exit 0 = нет FAIL среди проверенных URL — но SKIPPED может быть > 0, если URL содержит "UNVERIFIED"; в текущем sources.lock все URL реальные, ожидаемо 22 OK / 0 FAIL / 0 SKIPPED), плюс `lsblk`, `free -h`, `nproc`, `cat /etc/os-release`, `ls -la /dev/kvm 2>/dev/null`, `qemu-system-x86_64 --version`, `ping -c1 kernel.org`.
+- Минимум для S1: владелец присылает выводы команд идентификации Disk 2 (`lsblk`, `sudo fdisk -l /dev/sdX`, `sudo udevadm info --query=all --name=/dev/sdX`), выводы `mkfs.ext4`/`mount`/`df -h /mnt/lfs`, `id lfs`, `groups lfs`, `sudo -u lfs bash -lc '/usr/local/lib/lfs-safety.sh --self-test'`.
 
-**Рекомендация: Вариант B** на этапе S0 preflight — он не требует от владельца настройки port forwarding/SSH tunneling, и я могу дать конкретный список команд, которые нужно запустить и присылать вывод. После S0, если preflight OK — можно подумать о Варианте A.
+**После получения выводов S0 ИИ проводит аудит и даёт явное решение: «**S0 PASS**» (можно делать snapshot `after-S0-preflight` и переходить к S1) либо «**S0 FAIL**» (с указанием, что доработать). Snapshot `after-S0-preflight` создаётся владельцем ТОЛЬКО после явного «S0 PASS» от ИИ.**
+
+**SSH-доступ (Вариант A) — НЕ для S0/S1.** Если на более поздних стадиях (S2+) понадобится более тесное взаимодействие, SSH может быть настроен владельцем локально на своей машине; ИИ продолжает работать транзитивно (владелец копирует выводы команд). ИИ не запрашивает пароль lfs, не запрашивает приватные ключи, не генерирует SSH-ключи для владельца.
+
+**Никаких изменений Windows Defender/Firewall/SmartScreen/Hyper-V/VBS/Memory Integrity/BCD/BIOS-настроек безопасности** ради SSH-доступа или port forwarding — абсолютный запрет (см. §1.2).
 
 ## 8. Что НЕ делать
 
 - ❌ **Не устанавливать пакеты в текущую sandbox** (запрет владельца; вариант B отклонён).
 - ❌ **Не подключать физические диски** компьютера к VM.
-- ❌ **Не изменять основной Windows** — никаких отключений Hyper-V/VBS, BCD-изменений, Memory Integrity toggle (исправление #5).
+- ❌ **Не изменять основной Windows** — никаких отключений Hyper-V/VBS, BCD-изменений, Memory Integrity toggle, Defender/Firewall/SmartScreen изменений (исправление #5).
 - ❌ **Не устанавливать GRUB на физические диски** — только на виртуальные диски внутри VM (через loopback).
-- ❌ **Не давать lfs пользователю sudo** — никогда.
+- ❌ **Не давать lfs пользователю sudo** — никогда; idempotent-проверка: `groups lfs` не содержит `sudo`/`wheel`.
 - ❌ **Не добавлять lfs в libvirt** (исправление #4) — только в `kvm` группу, если /dev/kvm существует.
 - ❌ **Не добавлять admin в lfs группу без необходимости** (исправление #3) — используйте `sudo -u lfs` для доступа к файлам.
-- ❌ **Не использовать /dev/sdb без проверки** (исправление #1) — обязательна идентификация через `lsblk --output NAME,SIZE,MODEL,VENDOR,TYPE,MOUNTPOINTS,FSTYPE` + `udevadm info`.
+- ❌ **Не использовать /dev/sdb без проверки** (исправление #1) — обязательна идентификация через `lsblk --output NAME,SIZE,MODEL,VENDOR,TYPE,MOUNTPOINTS,FSTYPE` + `udevadm info` + owner approval gate.
 - ❌ **Не использовать device name в /etc/fstab** (исправление #2) — только UUID.
 - ❌ **Не выполнять git commits/push** (§10).
 - ❌ **Не выдавать TCG-тесты за эквивалентные по скорости KVM** (req #9); TCG-результаты использовать только как функциональную проверку загрузки, не как performance benchmarks.
 - ❌ **Не начинать A/B implementation** (ADR-0008 Proposed; условие владельца).
+- ❌ **Не передавать ИИ пароли, приватные SSH-ключи, токены, секреты** (правило 2026-11-02); ИИ работает транзитивно — владелец запускает команды и присылает вывод.
+- ❌ **Не требовать от владельца настройки port forwarding/SSH-tunneling ради S0/S1** — транзитивный доступ достаточен и не требует изменений Windows networking/security.
+- ❌ **Не запускать fdisk/mkfs без owner approval gate** — даже если `lsblk` однозначно идентифицировал Disk 2, владелец должен явно подтвердить «yes, /dev/sdX is Disk 2, proceed» перед любой write-операцией на диск.
+- ❌ **Не реализовывать UEFI/OVMF boot в Phase 2** — только BIOS/SeaBIOS; OVMF отложен до Phase 3.
 
 ## 9. Связанные документы
 
 - `docs/adr/0009-build-environment-vm.md` (Accepted) — решение о Build VM.
-- `PHASE2_PLAN.md` — детальный план S0–S8.
+- `PHASE2_PLAN.md` — детальный план S0–S8 (с разделением S0 = host preflight / S1 = disk + workspace + lfs user).
 - `scripts/host-version-check.sh` — S0 preflight скрипт.
 - `scripts/lib/lfs-safety.sh` — библиотека безопасности.
 - `sources.lock` — манифест исходников (URL + SHA256; SHA256 заполняются в S2).
