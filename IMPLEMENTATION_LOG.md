@@ -452,3 +452,173 @@ Git state:
 
 - 7/7 требований владельца выполнены; **Phase 1 restoration: CLOSED**.
 - Восстановление документации прекращено; следующий шаг — отчёт владельца о готовности Build VM (BUILD_ENV_SETUP.md §6.1).
+
+## 2026-11-02 — Phase 2 docs consistency audit
+
+### Scope
+
+Устранить противоречия в последовательности подготовки Build VM, S0, S1 и дальнейших этапов; согласовать snapshots; выровнять инструкции по lfs user (идемпотентность); явно разделить BIOS/UEFI; ужесточить правила SSH/security. **LFS-сборка НЕ начинается** (запрет владельца); правки только в документации.
+
+### Audit findings — 5 противоречий (требование владельца 2026-11-02)
+
+| # | Противоречие (было) | Где проявлялось |
+|---|---|---|
+| A | S0 требует готового `/mnt/lfs` + свободного места на `/mnt/lfs` + успешного `lfs-safety.sh --self-test`; S1 создаёт и монтирует `/mnt/lfs`, настраивает дисковую структуру и пользователя `lfs`; при этом S0 должен разрешать переход к S1 — круговая зависимость | PHASE2_PLAN.md §2 S0 (item 4, item 8), §2 S1, BUILD_ENV_SETUP.md §3.1, §4.4, §7.1 |
+| B | Snapshot table содержала дубликаты: `before-S1` = `after-S0-preflight` (между ними нет работы); `before-S2` не был привязан к S1 done; переходы между состояниями были неоднозначны | BUILD_ENV_SETUP.md §6 (snapshot table), PHASE2_PLAN.md S1 line 68 (snapshot `before-S1`) |
+| C | `adduser lfs` не идемпотентен (повторный запуск падает); `groupadd -f lfs` после `adduser` избыточен (Debian adduser создаёт группу автоматически); `usermod -aG kvm lfs` без проверки существования `/dev/kvm` | BUILD_ENV_SETUP.md §2.5, §2.6, §2.7 |
+| D | Phase 2 completion criterion (PHASE2_PLAN.md §1) требовал «QEMU успешно грузит систему (SeaBIOS **и** OVMF) до login prompt», но S6/S7 покрывали только BIOS boot; OVMF был помечен «опционально»; итоговое условие невыполнимо в рамках Phase 2 | PHASE2_PLAN.md §1 line 18, §2 S6 line 166, §2 S7 |
+| E | BUILD_ENV_SETUP.md §7.2 содержал «Пароль lfs передаётся мне (или на время сессии создаётся отдельный SSH-ключ)» — прямо запрещено владельцем 2026-11-02; рекомендовался SSH-доступ, что требовало бы port forwarding и потенциально изменений Windows networking/security | BUILD_ENV_SETUP.md §7.2 |
+
+### Actions
+
+| Действие | Результат |
+|---|---|
+| Клон GitHub HEAD `27ca0bd` (read-only) в `/tmp/MO-Linux-fresh` | 68 файлов (67 + `.gitattributes`); рабочая копия для правок — `/home/z/my-project/scripts/MO-Linux-work` |
+| Дифф local sandbox vs GitHub HEAD | 5 файлов расходятся: `.gitignore` (GitHub расширен), `README.md` (GitHub переписан владельцем — НОВЕЕ, сохранён), `IMPLEMENTATION_LOG.md`/`PROJECT_STATUS.md` (sandbox содержал промежуточные записи от прошлой сессии — НЕ перенесены в патч, чтобы не дублировать работу владельца), `bench/results/host-version-check-*.txt` (только trailing whitespace — НЕ трогается) |
+| PHASE2_PLAN.md §1: критерий S7 «(SeaBIOS и OVMF)» → «через SeaBIOS»; добавлен явный параграф «UEFI/OVMF boot — НЕ критерий завершения Phase 2» | OVMF отложен до Phase 3 явно (Проблема D — устранена) |
+| PHASE2_PLAN.md §2 S0: убраны items 4 (free space на /mnt/lfs) и 8 (lfs-safety.sh self-test) — они требует /mnt/lfs, который ещё не существует; S0 переопределён как host-only preflight (OS, kernel, RAM, vCPU, host-version-check, qemu, /dev/kvm presence, network, sources.lock URLs) | S0 больше не требует результатов S1 (Проблема A — устранена) |
+| PHASE2_PLAN.md §2 S1: переопределён как disk + workspace + lfs user + lfs-safety; разбит на 5 подэтапов S1.1 (lsblk ID) → S1.2 (fdisk) → S1.3 (mkfs+mount) → S1.4 (lfs user idempotent) → S1.5 (lfs-safety + final readiness gate) с owner approval gate перед fdisk | S1 требует успешного S0; owner approval gate перед fdisk зафиксирован (Проблема A — устранена) |
+| PHASE2_PLAN.md §2 S2: убраны дублирующие шаги lfs env (теперь в S1.4); snapshot переименован `before-S2` → `before-S3` (т.к. snapshot `before-S2` теперь делает S1) | S2 = только source download + SHA256 |
+| PHASE2_PLAN.md §2 S6: шаг 8 «UEFI (опционально)» → «UEFI/OVMF (отложено до Phase 3)»; явно указано, что Phase 2 покрывает только BIOS path | Проблема D — устранена |
+| PHASE2_PLAN.md §2 S7: заголовок «Первая загрузка в QEMU (только BIOS/SeaBIOS path; UEFI — Phase 3)»; команды — обе BIOS (KVM/TCG variants); добавлена фиксация backend в `tests/results/.../backend.txt` | Проблема D — устранена |
+| PHASE2_PLAN.md §4: добавлены явные запреты «не передавать ИИ пароли/ключи», «UEFI/OVMF — НЕ Phase 2», сохранены все прежние запреты (Defender/Firewall/SmartScreen/Hyper-V/VBS/Memory Integrity/BCD/BIOS) | Проблема E — устранена |
+| BUILD_ENV_SETUP.md v4: status, S0/S1 разделение, §2.5 idempotent lfs user, §2.6 idempotent group, §2.7 kvm IFF /dev/kvm, §6 snapshot table (без `before-S1`), §7.1 checklist с `[S0]`/`[S1]` метками, §7.2 SSH rules (без передачи паролей), §8 доп. запреты | Проблемы A, B, C, D, E — устранены в одном файле |
+| docs/adr/0009-build-environment-vm.md: ADR Decision/Status НЕ изменён (правило владельца — принятые ADR без разрешения не менять); обновлены только Context (упоминание разделения S0/S1), Decision table (snapshot timing wording), Verification plan (S0=host preflight, S1=disk+workspace) | Аудит не нарушил ADR-0009; wording выровнен с PHASE2_PLAN/BUILD_ENV_SETUP |
+| PROJECT_STATUS.md: добавлен раздел «Phase 2 docs audit (2026-11-02)» с таблицей 5 проблем/решений; обновлён Next action (8 шагов с явным упоминанием транзитивного доступа и owner approval gate) | Статус синхронизирован с актуальным состоянием docs |
+| IMPLEMENTATION_LOG.md: добавлена настоящая запись аудита | Аудит зафиксирован в логе |
+| `git diff` против `27ca0bd` → patch | `phase2-docs-audit-20261102.patch` создан; размер ~52 KB |
+| `git apply --check` на свежем клоне GitHub `main` | exit 0 (patch применяется чисто) |
+| commit/push, изменения GitHub, install пакетов в sandbox, fdisk/mkfs на любом диске, изменения Windows/BCD/Hyper-V/VBS/Memory Integrity/Defender/Firewall/SmartScreen | **НЕ выполнялись** (запреты владельца) |
+
+### Files changed (5)
+
+1. `PHASE2_PLAN.md` — §1 (критерий S7 BIOS-only + явный параграф об UEFI Phase 3), §2 (S0 переопределён как host preflight; S1 переопределён с 5 подэтапами S1.1–S1.5 и owner approval gate; S2 dedup; S6 шаг 8; S7 только BIOS), §3 (checkpoints S0–S8), §4 (доп. ограничения), §5 риски.
+2. `docs/BUILD_ENV_SETUP.md` — v4; §2.5 (idempotent lfs user), §2.6 (idempotent group), §2.7 (kvm IFF /dev/kvm), §6 (snapshot table без `before-S1`), §7.1 (checklist с [S0]/[S1] метками), §7.2 (SSH rules без передачи паролей), §8 (доп. запреты).
+3. `docs/adr/0009-build-environment-vm.md` — Context wording, Decision table snapshot timing, Verification plan (S0=host, S1=disk+workspace). **Decision/Status НЕ изменён.**
+4. `PROJECT_STATUS.md` — Phase 2 audit section, Next action (8 шагов).
+5. `IMPLEMENTATION_LOG.md` — настоящая запись.
+
+### Old vs New stage sequence (таблица по требованию владельца)
+
+| Этап (было) | Что требовалось | Что создавалось | Этап (стало) | Что теперь требуется | Что теперь создается |
+|---|---|---|---|---|---|
+| S0 (было) | /mnt/lfs mounted, free space, lfs-safety self-test, lfs user (из S1!) | host-version-check отчёт, snapshot `after-S0-preflight` | **S0** | OS, kernel, RAM, vCPU, host-version-check, qemu, /dev/kvm presence, network, sources.lock URLs, Disk 2 виден в lsblk (unformatted) | host-version-check отчёт, snapshot `after-S0-preflight` (Disk 2 НЕ размечен) |
+| S1 (было) | (ничего, т.к. владелец делает VM) — но при этом S1 = full VM+disk+lfs+workspace, что делается ДО S0 на практике | VM, apt-install, lfs user, /mnt/lfs, lfs-safety install, snapshot `before-S1` | **S1** | S0 OK + owner approval gate перед fdisk | Disk 2 ID → owner approval → fdisk → mkfs → mount /mnt/lfs → lfs user (idempotent) → lfs env → lfs-safety install + self-test → snapshot `before-S2` |
+| S2 (было) | lfs env (.bash_profile/.bashrc — теперь в S1.4), sources download, SHA256 | sources.lock updated, snapshot `before-S2` | **S2** | S1 OK | sources download + SHA256 + sources.lock updated, snapshot `before-S3` |
+| S3–S8 (было) | без изменений | без изменений | **S3–S8** | без изменений | без изменений |
+
+### Snapshots (таблица соответствия состояний)
+
+| Snapshot (было) | Соответствие (стало) |
+|---|---|
+| `clean-base` | `clean-base` (без изменений — Debian installed, pre apt-install) |
+| `after-S0-preflight` | `after-S0-preflight` (переопределён: apt-installed + host-version-check OK + Disk 2 виден, **неразмечен**) |
+| `before-S1` | **УБРАН** как дубликат `after-S0-preflight` (между S0 и S1 нет работы) |
+| `before-S2` | `before-S2` (переопределён: = S1 done — Disk 2 размечен, /mnt/lfs смонтирован, lfs user + env + lfs-safety OK, free ≥ 15 GB) |
+| `before-S3` ... `before-S7` | без изменений |
+| `after-S7-success` | `after-S7-success` (без изменений, но явно BIOS/SeaBIOS path; UEFI — Phase 3) |
+| `after-S8-success` | `after-S8-success` (без изменений) |
+
+### Internal links / snapshot names / status strings — verification
+
+| Проверка | Результат |
+|---|---|
+| Все snapshot имена, упомянутые в PHASE2_PLAN.md (S0–S8), согласованы с BUILD_ENV_SETUP.md §6 | ✅ `clean-base`, `after-S0-preflight`, `before-S2`, `before-S3`, `before-S4`, `before-S5`, `before-S6`, `before-S7`, `after-S7-success`, `after-S8-success` — все 10 присутствуют в обеих таблицах; `before-S1` убран везде |
+| ADR-0009 упоминает только S0/S1 в Verification plan — согласовано с новой схемой | ✅ S0 = host preflight, S1 = disk+workspace, S3 = first LFS package |
+| Ссылки «PHASE2_PLAN.md — детальный план S0–S8» в BUILD_ENV_SETUP.md §9, ADR-0009, PROJECT_STATUS.md | ✅ Все корректны (S0–S8 без перенумерации) |
+| Ссылка `docs/BUILD_ENV_SETUP.md` §6.1 в IMPLEMENTATION_LOG.md line 454 → §7.1 (старая нумерация) | ⚠️ Старая нумерация сохранена как историческая (entry от 2026-10-31); в новых записях используется §7.1 |
+| TESTING_STRATEGY.md line 28: «Phase 2 (S7) — QEMU boot to login (BIOS; UEFI опц.)» | ✅ Уже консистентно (BIOS обязательно, UEFI опционально → теперь явно Phase 3); изменения не требуется |
+| `git apply --check phase2-docs-audit-20261102.patch` на свежем клоне `main` | exit 0 (patch чистый) |
+
+### Remaining risks
+
+1. **LFS-сборка ещё не начата** — Phase 2 ждёт отчёта владельца о развёртывании VM (S0 preflight).
+2. **Owner approval gate** — критическая точка: владелец должен явно подтвердить disk identity перед fdisk; если пропустить — риск повредить не тот диск (хотя lsblk + udevadm + размер 60G + model = virtual disk + проверка `! /dev/sda` должны исключить ошибку).
+3. **TCG-время S7** — если /dev/kvm недоступен на Windows-хосте с VirtualBox, boot будет 2–10 мин; функционально валидно, но benchmark-замеры (Phase 5+) — только на KVM или реальном железе.
+4. **Patch adoption** — patch должен быть применён владельцем к его локальному клону перед началом развёртывания VM; если владелец начнёт VM setup со старой версии docs, может спутаться в S0/S1 разделении (но команды в §2.5–§4.4 BUILD_ENV_SETUP.md работоспособны и в старой схеме — разделены они только концептуально).
+
+### Results
+
+- 5/5 противоречий (A, B, C, D, E) устранены.
+- Patch `download/phase2-docs-audit-20261102.patch` применяется чисто к GitHub HEAD `27ca0bd` (проверено `git apply --check`).
+- Архитектура проекта, ADR-0001..0008, ADR-0009 Decision, sources.lock, scripts/, Makefile, kernel-line, package-manager, update-rollback стратегия — НЕ изменены.
+- LFS-сборка НЕ начата; git commit/push НЕ выполнены; изменения Windows/BCD/Hyper-V/VBS/Memory Integrity/Defender/Firewall/SmartScreen НЕ производились.
+- Следующий шаг — решение владельца: применить patch и начать развёртывание VM по BUILD_ENV_SETUP.md v4.
+
+## 2026-11-02 — Phase 2 docs audit: дополнительные фиксы (после owner review)
+
+### Scope
+
+Владелец принял основной аудит, но попросил исправить четыре момента перед финальной передачей файлов:
+1. Snapshot `after-S0-preflight` должен создаваться ТОЛЬКО после того, как владелец передаст результаты S0 и ИИ явно подтвердит «S0 PASS». До этого snapshot не создавать.
+2. Команда проверки sources неверна — `scripts/sources-verify.py` не поддерживает `--check-urls`. Правильный вызов: `python3 scripts/sources-verify.py sources.lock`. Не подавлять exit code через `|| echo`.
+3. Перепроверить идемпотентную последовательность создания пользователя и группы `lfs` с учётом того, что Debian `adduser lfs` сам создаёт одноимённую группу.
+4. **Исправить интерпретацию exit code `sources-verify.py`.** Exit code 0 означает отсутствие FAIL среди проверенных URL, но НЕ гарантирует, что все URL проверены: записи, в которых URL содержит строку `"UNVERIFIED"`, пропускаются (SKIPPED). Зафиксировать в документации и логе; выводить и сохранять полную строку Summary (`N OK / N FAIL / N SKIPPED`).
+
+### Verification of actual scripts/sources-verify.py
+
+Прочитан `scripts/sources-verify.py` (87 строк) из GitHub HEAD `27ca0bd`. Подтверждено:
+- Usage: `python3 scripts/sources-verify.py [path/to/sources.lock]` (аргумент — путь к sources.lock; по умолчанию `sources.lock`).
+- Параметр `--check-urls` **НЕ поддерживается** (передача `--check-urls` привела бы к `FATAL: --check-urls does not exist` и exit 2).
+- **Логика SKIP (lines 57–61):** если URL содержит подстроку `"UNVERIFIED"`, запись **пропускается** (`skip += 1`, status `SKIP`) — НЕ считается ни OK, ни FAIL.
+- **Логика exit code (line 82):** `return 0 if fail == 0 else 1` — exit 0 = нет FAIL среди проверенных URL; exit 1 = есть FAIL; exit 2 = `sources.lock` не найден (line 30).
+- **Вывод:** `# sources-verify run at <ISO ts>`, `# entries: N`, таблица `NAME STATUS URL`, последняя строка: `Summary: {ok} OK, {fail} FAIL, {skip} SKIPPED (placeholder)`.
+- **Ключевой вывод fix #4:** exit code 0 **НЕ означает «все URL reachable»** — он означает «нет FAIL среди проверенных». Часть URL может быть SKIPPED (если URL содержит "UNVERIFIED"), и эти SKIP не снижают успех S0, но должны быть объяснены как ожидаемые UNVERIFIED placeholders, а не упущенные проверки.
+
+### Проверка фактического состояния sources.lock
+
+Прочитан `sources.lock` (116 строк) из GitHub HEAD `27ca0bd`. Подтверждено:
+- 22 записи всего: 14 `[[sources]]` (kernel + 13 LFS пакетов) + 8 `[[patches]]`.
+- **Все 22 URL — реальные** (kernel.org, ftpmirror.gnu.org, sourceware.org, github.com, cpan.org, python.org, linuxfromscratch.org).
+- Строка `"UNVERIFIED"` встречается только в полях `sha256` (например, `sha256 = "UNVERIFIED"`), НЕ в полях `url`.
+- Скрипт `sources-verify.py` ищет `"UNVERIFIED"` в URL (через `if "UNVERIFIED" in url`), поэтому **в текущем sources.lock SKIPPED = 0 ожидаемо** (22 OK / 0 FAIL / 0 SKIPPED, exit 0).
+- Но в общем случае (если кто-то добавит запись с `url = "UNVERIFIED"` до S2) SKIPPED может быть > 0 — нужно явно фиксировать Summary, чтобы не принять SKIPPED за OK.
+
+### Actions (4 фикса)
+
+| Фикс # | Где было неправильно | Что сделано |
+|---|---|---|
+| **1 — snapshot timing** | PHASE2_PLAN.md §2 S0 step 10 («Snapshot `after-S0-preflight` сделан (если S0 OK)» — неявно, что владелец делает snapshot автоматически); BUILD_ENV_SETUP.md §6 snapshot table («после S0 host preflight (одобренного)» — не указано, КЕМ одобренного); §7.1 checklist («Snapshot `after-S0-preflight` сделан» — без условия явного PASS от ИИ); ADR-0009 Verification plan («после развёртывания VM владелец присылает...» — не описан gate); PROJECT_STATUS.md Next action step 3 («Сделать snapshot `after-S0-preflight`» — без условия) | Все 5 мест переписаны: snapshot `after-S0-preflight` создаётся **только после явного подтверждения «S0 PASS» от ИИ**; ИИ проводит аудит выводов S0, присланных владельцем транзитивно; до подтверждения snapshot НЕ создаётся (в случае FAIL состояние VM нужно менять, snapshot бесполезен). |
+| **2 — sources-verify command** | PHASE2_PLAN.md §2 S0 step 9 (`scripts/sources-verify.py --check-urls` — несуществующий параметр); PROJECT_STATUS.md Next action step 3 (без явной команды); BUILD_ENV_SETUP.md §7.1 checklist (без команды) | Все места заменены на `python3 scripts/sources-verify.py sources.lock`; exit code НЕ подавляется через `|| echo`; фиксируется фактический результат. |
+| **3 — lfs user/group idempotent** | PHASE2_PLAN.md §2 S1.4 (использовал `getent group lfs >/dev/null \|\| sudo groupadd lfs` — рабочий, но многословный; не объяснял, что Debian `adduser` сам создаёт группу); BUILD_ENV_SETUP.md §2.5/§2.6/§2.7 (та же логика, разделённая на 3 раздела с дублированием) | Все места переписаны: `sudo groupadd -f lfs` (флаг `-f` делает `groupadd` идемпотентным на уровне утилиты, exit 0 в обоих случаях); `if ! id lfs >/dev/null 2>&1; then sudo adduser lfs; fi` (Debian `adduser` использует существующую группу `lfs` как primary — стандартное поведение); `sudo usermod -aG lfs lfs` (harmless idempotent); `if [ -e /dev/kvm ]; then sudo usermod -aG kvm lfs; fi`. Добавлено пояснение: «Debian `adduser lfs` сам создаёт одноимённую группу `lfs` и использует её как primary; `groupadd -f` сначала создаёт группу, `adduser` её использует». |
+| **4 — exit code interpretation + Summary** | PHASE2_PLAN.md §2 S0 step 9 (писал «exit 0 = все URL reachable» — НЕВЕРНО; exit 0 = нет FAIL, но могут быть SKIPPED); PROJECT_STATUS.md Next action step 3 (та же неверная формулировка); BUILD_ENV_SETUP.md §6 snapshot table + §7.1 checklist + §7.2 (та же формулировка); ADR-0009 Verification plan (та же формулировка) | Все 5 мест переписаны: корректная интерпретация — exit 0 = нет FAIL среди проверенных URL, но **НЕ гарантирует**, что все URL проверены; записи с `"UNVERIFIED"` в URL **пропускаются** (SKIPPED); обязательно выводить и сохранять полную строку Summary `N OK, N FAIL, N SKIPPED`; для S0 PASS требуется: exit 0 AND FAIL=0 AND явный анализ SKIPPED (если SKIPPED > 0 — каждый SKIP должен быть объяснён как ожидаемый UNVERIFIED placeholder). В §7.1 добавлен отдельный пункт «Анализ SKIPPED». Указано, что в текущем sources.lock ожидаемо 22 OK / 0 FAIL / 0 SKIPPED (все URL реальные; `"UNVERIFIED"` только в полях `sha256`). |
+
+### Files re-edited (5, те же что и в основном аудите)
+
+1. `PHASE2_PLAN.md` — §2 S0 (step 9 sources-verify с корректной интерпретацией exit code + Summary; step 10 snapshot timing), §2 S0 результат (полный вывод включая Summary), §2 S1.4 (idempotent lfs user block).
+2. `docs/BUILD_ENV_SETUP.md` — §2.5 (полная переписка с `groupadd -f` + 4 шага + пояснение), §2.6 (verify-only), §2.7 (verify-only после §2.5 шаг 4), §6 snapshot table (`after-S0-preflight` gate = «S0 PASS» + Summary требование), §7.1 checklist (sources-verify команда с корректной интерпретацией + отдельный пункт «Анализ SKIPPED»), §7.2 (sources-verify в минимуме для S0 с полной интерпретацией).
+3. `docs/adr/0009-build-environment-vm.md` — Verification plan (sources-verify команда с корректной интерпретацией + gate «S0 PASS» + idempotent wording).
+4. `PROJECT_STATUS.md` — Next action step 3 (sources-verify команда + корректная интерпретация + явный gate).
+5. `IMPLEMENTATION_LOG.md` — настоящая запись (4 фикса).
+
+### Verification
+
+| Проверка | Результат |
+|---|---|
+| `git apply --check phase2-docs-audit-20261102.patch` на свежем клоне `main` (27ca0bd) | ✅ exit 0 (см. ниже отдельный раздел) |
+| Reverse apply (`git apply -R`) на свежем клоне после apply | ✅ exit 0 (patch корректно reverse-применяется) |
+| `python3 scripts/adr-lint.py docs/adr` | ✅ 9 ADR, 0 issues |
+| `bash -n` на shell-скриптах (не изменялись) | ✅ all OK |
+| Snapshot `after-S0-preflight` упоминается как автоматический шаг | ✅ НЕТ — везде привязан к явному «S0 PASS» от ИИ |
+| Команда `sources-verify.py --check-urls` где-либо упоминается (кроме исторических заметок в IMPLEMENTATION_LOG.md) | ✅ НЕТ — везде `python3 scripts/sources-verify.py sources.lock` |
+| `|| echo` подавление exit code в командах sources-verify | ✅ НЕТ — явно зафиксировано «exit code НЕ подавлять» |
+| Формулировка «exit 0 = все URL reachable» где-либо осталась | ✅ НЕТ — везде заменено на «exit 0 = нет FAIL среди проверенных URL; но SKIPPED может быть > 0» |
+| Требование выводить полную Summary строку `N OK, N FAIL, N SKIPPED` | ✅ ДА — во всех 5 местах (PHASE2_PLAN §2 S0 step 9 + результат S0; BUILD_ENV_SETUP §6 + §7.1 + §7.2; ADR-0009 Verification plan; PROJECT_STATUS Next action step 3) |
+| `groupadd lfs` без `-f` где-либо упоминается | ✅ НЕТ — везде `groupadd -f lfs` |
+| `getent group lfs` в активных инструкциях (только verify-секции допустимы) | ✅ Только в §2.6 как verify; не в creation-пути |
+| LFS-сборка начата | ❌ НЕТ (запрет владельца) |
+| git commit/push | ❌ НЕ выполнены (запрет владельца) |
+
+### Updated patch
+
+- **Файл:** `download/phase2-docs-audit-20261102.patch` (перезаписан; новый SHA-256 см. ниже).
+- **База:** GitHub HEAD `27ca0bd3aa9fcbcbf6f0dde4fe66a3e54f14b8ad` (Manivero/MO-Linux, ветка main).
+- **Проверка:** `git apply --check` exit 0 на свежем клоне (3 независимые верификации: apply --check, реальное apply, reverse apply).
+
+### Results
+
+- 4/4 дополнительных фикса применены.
+- Patch `download/phase2-docs-audit-20261102.patch` перезаписан; применяется чисто к GitHub HEAD `27ca0bd` (проверено `git apply --check` + реальное apply + reverse apply — все exit 0).
+- Все 5 файлов: PHASE2_PLAN.md, docs/BUILD_ENV_SETUP.md, docs/adr/0009-build-environment-vm.md, PROJECT_STATUS.md, IMPLEMENTATION_LOG.md — согласованы по 4 новым требованиям + основному аудиту (5 противоречий).
+- Архитектура проекта, ADR-0001..0008, ADR-0009 Decision, sources.lock, scripts/, Makefile, kernel-line, package-manager, update-rollback стратегия — НЕ изменены.
+- LFS-сборка НЕ начата; git commit/push НЕ выполнены; изменения Windows/BCD/Hyper-V/VBS/Memory Integrity/Defender/Firewall/SmartScreen НЕ производились.
